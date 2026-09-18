@@ -1,13 +1,52 @@
 [
   {
-    "name": "week",
-    "title": "This week",
-    "subtitle": "Enterprise CRM for Claude Code: what needs attention, rendered by npm run view",
+    "name": "pipeline",
+    "title": "The pipeline",
+    "subtitle": "Enterprise CRM for Claude Code: every open deal, what needs a decision, and the lead queue. Rendered by npm run view.",
     "sections": [
       {
-        "title": "Needs attention",
-        "note": "TODO(author): point this at the industry's attention view (overdue, stuck, quiet).",
-        "sql": "select 'replace me' as item, 'TODO(author)' as why"
+        "title": "Needs a decision",
+        "note": "Missed close dates, deals with no next step, stalled and single-threaded deals, untouched leads, quota gaps. Worst first.",
+        "sql": "select case reason when 'close_missed' then 'CLOSE DATE MISSED, deal still open' when 'closing_no_next_step' then 'Closing soon, no next step' when 'next_step_overdue' then 'Next step overdue' when 'quota_gap' then 'Quota gap' when 'deal_stalled' then 'Deal stalled' when 'single_threaded' then 'Big deal, one relationship' when 'lead_unworked' then 'Lead never touched' when 'customer_quiet' then 'Customer gone quiet' when 'task_overdue' then 'Task overdue' else reason end as what, label as record, account, rep, days, case when amount_cents is not null then to_char(abs(amount_cents) / 100.0, 'FM$999,999,990') else '' end as amount, detail from v_attention order by case reason when 'close_missed' then 1 when 'closing_no_next_step' then 2 when 'next_step_overdue' then 3 when 'quota_gap' then 4 when 'deal_stalled' then 5 when 'single_threaded' then 6 when 'lead_unworked' then 7 when 'customer_quiet' then 8 else 9 end, days desc nulls last"
+      },
+      {
+        "title": "The open pipeline",
+        "note": "Weighted is amount times stage probability. UNPRICED and NONE are problems, and /compliance says so.",
+        "sql": "select ref, account, opportunity, stage, case when amount_cents is null then 'UNPRICED' else to_char(amount_cents / 100.0, 'FM$999,999,990') end as amount, case when weighted_cents is null then '' else to_char(weighted_cents / 100.0, 'FM$999,999,990') end as weighted, to_char(close_date, 'YYYY-MM-DD') as close, case when days_to_close < 0 then abs(days_to_close) || ' days AGO' else days_to_close || ' days' end as countdown, coalesce(next_step, 'NONE') as next_step, coalesce(to_char(next_step_on, 'YYYY-MM-DD'), '') as next_due, rep from v_pipeline order by case stage when 'negotiation' then 1 when 'proposal' then 2 when 'discovery' then 3 else 4 end, close_date"
+      },
+      {
+        "title": "The funnel",
+        "sql": "select stage, deals, case when value_cents > 0 then to_char(value_cents / 100.0, 'FM$999,999,990') else '' end as value, case when weighted_cents > 0 then to_char(weighted_cents / 100.0, 'FM$999,999,990') else '' end as weighted, coalesce(avg_days_in_stage::text, '') as avg_days_in_stage from v_funnel order by ord"
+      },
+      {
+        "title": "The lead queue",
+        "note": "Every lead touched inside three days is the standard. NEVER in the last column is a breach.",
+        "sql": "select full_name as who, company, coalesce(source, '') as source, coalesce(region, '') as region, status, rep, days_old || 'd' as age, coalesce(to_char(last_touch_on, 'YYYY-MM-DD'), 'NEVER') as last_touch from v_leads order by received_on"
+      }
+    ]
+  },
+  {
+    "name": "quarter",
+    "title": "The quarter",
+    "subtitle": "Enterprise CRM for Claude Code: the forecast against quota, the scorecard, and the customers going quiet. Rendered by npm run view.",
+    "sections": [
+      {
+        "title": "The forecast",
+        "note": "Closed won plus the weighted pipeline committed to this quarter, against quota. The report the incumbent gates behind its top editions.",
+        "sql": "select rep, to_char(quota_cents / 100.0, 'FM$999,999,990') as quota, case when closed_won_cents > 0 then to_char(closed_won_cents / 100.0, 'FM$999,999,990') else '' end as closed_won, case when weighted_quarter_cents > 0 then to_char(weighted_quarter_cents / 100.0, 'FM$999,999,990') else '' end as weighted_qtr, case when quota_cents - closed_won_cents - weighted_quarter_cents > 0 then to_char((quota_cents - closed_won_cents - weighted_quarter_cents) / 100.0, 'FM$999,999,990') else 'covered' end as gap, round((closed_won_cents + weighted_quarter_cents) * 100.0 / quota_cents) || '%' as coverage, days_left_in_quarter || ' days left' as runway from v_forecast order by rep"
+      },
+      {
+        "title": "The scorecard",
+        "sql": "select rep, open_deals, case when open_cents > 0 then to_char(open_cents / 100.0, 'FM$999,999,990') else '' end as pipeline, won_90d, case when won_90d_cents > 0 then to_char(won_90d_cents / 100.0, 'FM$999,999,990') else '' end as won_90d_value, lost_90d, coalesce(avg_cycle_days::text, '') as cycle_days, activities_14d as activity_14d, next_steps_overdue as steps_overdue from v_scorecard order by rep"
+      },
+      {
+        "title": "Customers gone quiet",
+        "note": "Sixty days without a conversation is how renewals get lost.",
+        "sql": "select account, rep, to_char(lifetime_won_cents / 100.0, 'FM$999,999,990') as lifetime_won, days_quiet || ' days' as quiet, coalesce(to_char(last_activity_on, 'YYYY-MM-DD'), 'never') as last_activity from v_account_position where account_type = 'customer' and days_quiet > 30 order by days_quiet desc"
+      },
+      {
+        "title": "Won and lost, last 90 days",
+        "sql": "select o.ref, a.name as account, o.name as opportunity, case when o.stage = 'closed_won' then 'WON' else 'lost' end as outcome, to_char(o.amount_cents / 100.0, 'FM$999,999,990') as amount, to_char(coalesce(o.won_on, o.lost_on), 'YYYY-MM-DD') as closed, coalesce(r.full_name, '') as rep, coalesce(o.lost_reason, '') as lost_reason from opportunities o join accounts a on a.id = o.account_id left join reps r on r.id = o.rep_id where (o.won_on >= current_date - 90 or o.lost_on >= current_date - 90) order by coalesce(o.won_on, o.lost_on) desc"
       }
     ]
   }
